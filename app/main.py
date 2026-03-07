@@ -3,12 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import CORS_ORIGINS
 from app.database import check_database
+from app.rate_limit import RateLimitMiddleware
 from app.routers import auth, faces, jobs, upload
 from app.routers.assets import router as assets_router
 from app.services.queue import get_queue_service
 from app.services.storage import get_storage_service
 
 app = FastAPI(title="Face-Me", description="AI-powered face grouping SaaS")
+app.add_middleware(RateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
