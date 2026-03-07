@@ -86,6 +86,7 @@ def _upsert_images(
     for file_data in files:
         if not storage.object_exists("uploads", file_data.storage_key):
             raise HTTPException(400, f"Upload missing for {file_data.original_name}")
+        storage.ensure_encrypted("uploads", file_data.storage_key, file_data.content_type)
 
         image = db.query(Image).filter(Image.storage_key == file_data.storage_key).first()
         if image is None:
