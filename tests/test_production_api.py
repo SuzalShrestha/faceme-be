@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Cluster, Face, Image  # noqa: E402
+from app.models import Cluster, Face, Image, User  # noqa: E402
+from app.services.cluster import run_clustering  # noqa: E402
 from app.services.pipeline import run_pipeline_job  # noqa: E402
 from app.services.storage import get_storage_service  # noqa: E402
 
@@ -194,6 +195,53 @@ class ProductionApiTest(unittest.TestCase):
         )
         self.assertEqual(rename.status_code, 200)
         self.assertEqual(rename.json()["label"], "Renamed Person")
+
+    def test_single_faces_form_their_own_clusters(self) -> None:
+        self.register_user()
+
+        db = SessionLocal()
+        user = db.query(User).filter(User.email == "test@example.com").first()
+        self.assertIsNotNone(user)
+
+        image = Image(
+            user_id=user.id,
+            storage_key="test-image",
+            original_name="image.jpg",
+            content_type="image/jpeg",
+            size_bytes=12,
+            status="processed",
+        )
+        db.add(image)
+        db.flush()
+
+        embeddings = [
+            np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0, 0.0], dtype=np.float32),
+        ]
+        for idx, embedding in enumerate(embeddings):
+            db.add(
+                Face(
+                    image_id=image.id,
+                    embedding=embedding.tobytes(),
+                    bbox="[0, 0, 10, 10]",
+                    crop_key=f"crop-{idx}",
+                    det_score="0.9",
+                )
+            )
+        db.commit()
+
+        storage = get_storage_service()
+        result = run_clustering(db, storage, user_id=user.id)
+
+        clusters = db.query(Cluster).filter(Cluster.user_id == user.id).all()
+        faces = db.query(Face).filter(Face.image_id == image.id).all()
+
+        self.assertEqual(result["total_clusters"], 2)
+        self.assertEqual(result["ungrouped_faces"], 0)
+        self.assertEqual(len(clusters), 2)
+        self.assertEqual({face.cluster_id for face in faces}, {c.id for c in clusters})
+
+        db.close()
 
 
 if __name__ == "__main__":
