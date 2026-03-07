@@ -1,10 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from app.config import UPLOAD_DIR, FACES_DIR, CORS_ORIGINS
-from app.database import init_db
-from app.routers import upload, faces, jobs, auth
+from app.config import CORS_ORIGINS
+from app.database import check_database
+from app.routers import auth, faces, jobs, upload
+from app.routers.assets import router as assets_router
+from app.services.queue import get_queue_service
+from app.services.storage import get_storage_service
 
 app = FastAPI(title="Face-Me", description="AI-powered face grouping SaaS")
 
@@ -16,20 +18,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-app.mount("/static/faces", StaticFiles(directory=str(FACES_DIR)), name="faces")
-
 app.include_router(auth.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(faces.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(assets_router, prefix="/api")
 
 
-@app.on_event("startup")
-def on_startup():
-    init_db()
-
-
-@app.get("/api/health")
-def health():
+@app.get("/api/health/live")
+def live() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/health/ready")
+def ready() -> dict[str, str]:
+    check_database()
+    get_storage_service().readiness_check()
+    get_queue_service().readiness_check()
+    return {"status": "ready"}

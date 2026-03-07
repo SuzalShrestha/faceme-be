@@ -12,7 +12,10 @@ python-multipart
 aiofiles
 opencv-python-headless
 psycopg2-binary
-python-jose[cryptography]
 bcrypt
 python-dotenv
 alembic
+httpx
+azure-identity
+azure-storage-blob
+azure-storage-queue

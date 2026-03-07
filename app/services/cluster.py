@@ -5,9 +5,10 @@ from sklearn.cluster import DBSCAN
 from sqlalchemy.orm import Session
 
 from app.models import Cluster, Face, Image
+from app.services.storage import StorageService
 
 
-def run_clustering(db: Session, *, user_id: int) -> dict:
+def run_clustering(db: Session, storage: StorageService, *, user_id: int) -> dict:
     """Run DBSCAN clustering on all face embeddings for a specific user.
 
     Returns a summary dict with cluster counts.
@@ -18,9 +19,7 @@ def run_clustering(db: Session, *, user_id: int) -> dict:
     if not faces:
         return {"total_clusters": 0, "clustered_faces": 0, "ungrouped_faces": 0}
 
-    embeddings = np.array(
-        [np.frombuffer(f.embedding, dtype=np.float32) for f in faces]
-    )
+    embeddings = np.array([np.frombuffer(f.embedding, dtype=np.float32) for f in faces])
 
     clustering = DBSCAN(eps=0.5, min_samples=2, metric="cosine").fit(embeddings)
     labels = clustering.labels_

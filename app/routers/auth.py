@@ -1,12 +1,21 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth import (
+    clear_session_cookie,
+    create_session,
+    get_current_user,
+    hash_password,
+    revoke_session,
+    set_session_cookie,
+    verify_password,
+)
+from app.config import SESSION_COOKIE_NAME
 from app.database import get_db
 from app.models import User
-from app.auth import hash_password, verify_password, create_access_token, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -22,11 +31,6 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
 class UserResponse(BaseModel):
     id: int
     email: str
@@ -37,10 +41,10 @@ class UserResponse(BaseModel):
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterRequest, db: Session = Depends(get_db)):
+def register(body: RegisterRequest, response: Response, db: Session = Depends(get_db)):
     if len(body.password) < 6:
         raise HTTPException(400, "Password must be at least 6 characters")
-    
+
     existing = db.query(User).filter(User.email == body.email.lower().strip()).first()
     if existing:
         raise HTTPException(409, "Email already registered")
@@ -53,17 +57,27 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    raw_token, expires_at = create_session(db, user)
+    set_session_cookie(response, raw_token, expires_at)
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
-def login(body: LoginRequest, db: Session = Depends(get_db)):
+@router.post("/login", response_model=UserResponse)
+def login(body: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email.lower().strip()).first()
     if not user or not verify_password(body.password, user.hashed_password):
         raise HTTPException(401, "Invalid email or password")
 
-    token = create_access_token(data={"sub": str(user.id)})
-    return TokenResponse(access_token=token)
+    raw_token, expires_at = create_session(db, user)
+    set_session_cookie(response, raw_token, expires_at)
+    return user
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    revoke_session(db, request.cookies.get(SESSION_COOKIE_NAME))
+    clear_session_cookie(response)
 
 
 @router.get("/me", response_model=UserResponse)

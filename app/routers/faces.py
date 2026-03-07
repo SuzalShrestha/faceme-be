@@ -1,53 +1,48 @@
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.auth import get_current_user
 from app.database import get_db
 from app.models import Cluster, Face, Image, User
-from app.services.face_engine import process_images
-from app.services.cluster import run_clustering
-from app.auth import get_current_user
+from app.services.storage import get_storage_service
 
 router = APIRouter(tags=["faces"])
 
 
-class ProcessRequest(BaseModel):
-    image_ids: Optional[list[int]] = None
+class RenameRequest(BaseModel):
+    label: str
 
 
-@router.post("/process")
-def process_faces(body: ProcessRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    result = process_images(body.image_ids, db, user_id=user.id)
-    return result
-
-
-@router.post("/cluster")
-def cluster_faces(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    result = run_clustering(db, user_id=user.id)
-    return result
+class MergeRequest(BaseModel):
+    source_cluster_id: int
+    target_cluster_id: int
 
 
 @router.get("/clusters")
 def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    clusters = db.query(Cluster).filter(Cluster.user_id == user.id).all()
+    storage = get_storage_service()
+    clusters = db.query(Cluster).filter(Cluster.user_id == user.id).order_by(Cluster.created_at.desc()).all()
     result = []
-    for c in clusters:
-        face_count = db.query(Face).filter(Face.cluster_id == c.id).count()
-        rep_face = (
-            db.query(Face).filter(Face.id == c.representative_face_id).first()
-            if c.representative_face_id
+    for cluster in clusters:
+        face_count = db.query(Face).filter(Face.cluster_id == cluster.id).count()
+        representative_face = (
+            db.query(Face).filter(Face.id == cluster.representative_face_id).first()
+            if cluster.representative_face_id
             else None
         )
         result.append(
             {
-                "id": c.id,
-                "label": c.label,
+                "id": cluster.id,
+                "label": cluster.label,
                 "face_count": face_count,
-                "representative_crop": rep_face.crop_path if rep_face else None,
+                "representative_url": (
+                    storage.build_asset_url("faces", representative_face.crop_key)
+                    if representative_face
+                    else None
+                ),
             }
         )
     return result
@@ -55,44 +50,44 @@ def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_curren
 
 @router.get("/clusters/{cluster_id}")
 def get_cluster_detail(cluster_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    storage = get_storage_service()
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id, Cluster.user_id == user.id).first()
     if not cluster:
         raise HTTPException(404, "Cluster not found")
 
     faces = db.query(Face).filter(Face.cluster_id == cluster_id).all()
-    image_ids = list({f.image_id for f in faces})
-    images = db.query(Image).filter(Image.id.in_(image_ids)).all()
+    image_ids = list({face.image_id for face in faces})
+    images = db.query(Image).filter(Image.id.in_(image_ids)).all() if image_ids else []
 
     return {
         "id": cluster.id,
         "label": cluster.label,
         "faces": [
             {
-                "id": f.id,
-                "crop_path": f.crop_path,
-                "bbox": f.get_bbox(),
-                "image_id": f.image_id,
+                "id": face.id,
+                "asset_url": storage.build_asset_url("faces", face.crop_key),
+                "bbox": face.get_bbox(),
+                "image_id": face.image_id,
             }
-            for f in faces
+            for face in faces
         ],
         "images": [
             {
-                "id": img.id,
-                "filename": img.filename,
-                "original_name": img.original_name,
+                "id": image.id,
+                "asset_url": storage.build_asset_url("uploads", image.storage_key),
+                "original_name": image.original_name,
             }
-            for img in images
+            for image in images
         ],
     }
 
 
-class RenameRequest(BaseModel):
-    label: str
-
-
 @router.patch("/clusters/{cluster_id}")
 def rename_cluster(
-    cluster_id: int, body: RenameRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+    cluster_id: int,
+    body: RenameRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id, Cluster.user_id == user.id).first()
     if not cluster:
@@ -104,23 +99,19 @@ def rename_cluster(
 
 @router.get("/ungrouped")
 def list_ungrouped_faces(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    user_image_ids = [img.id for img in db.query(Image).filter(Image.user_id == user.id).all()]
+    storage = get_storage_service()
+    user_image_ids = [image.id for image in db.query(Image).filter(Image.user_id == user.id).all()]
     faces = db.query(Face).filter(Face.cluster_id.is_(None), Face.image_id.in_(user_image_ids)).all()
     return [
         {
-            "id": f.id,
-            "crop_path": f.crop_path,
-            "bbox": f.get_bbox(),
-            "image_id": f.image_id,
-            "image_filename": f.image.filename,
+            "id": face.id,
+            "asset_url": storage.build_asset_url("faces", face.crop_key),
+            "bbox": face.get_bbox(),
+            "image_id": face.image_id,
+            "image_name": face.image.original_name,
         }
-        for f in faces
+        for face in faces
     ]
-
-
-class MergeRequest(BaseModel):
-    source_cluster_id: int
-    target_cluster_id: int
 
 
 @router.post("/clusters/merge")
@@ -132,9 +123,7 @@ def merge_clusters(body: MergeRequest, db: Session = Depends(get_db), user: User
     if source.id == target.id:
         raise HTTPException(400, "Cannot merge a cluster with itself")
 
-    db.query(Face).filter(Face.cluster_id == source.id).update(
-        {Face.cluster_id: target.id}
-    )
+    db.query(Face).filter(Face.cluster_id == source.id).update({Face.cluster_id: target.id})
     db.delete(source)
     db.commit()
     return {"message": f"Merged cluster {body.source_cluster_id} into {body.target_cluster_id}"}
