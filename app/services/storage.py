@@ -203,7 +203,6 @@ class AzureBlobStorageService(StorageService):
     def create_upload_target(
         self, *, user_id: int, original_name: str, content_type: str
     ) -> UploadInstruction:
-        kind: StorageKind = "uploads"
         storage_key = self.new_upload_key(
             user_id=user_id,
             original_name=original_name,
@@ -211,7 +210,7 @@ class AzureBlobStorageService(StorageService):
         )
         return UploadInstruction(
             storage_key=storage_key,
-            upload_url=f"/api/uploads/proxy/{kind}/{storage_key}",
+            upload_url=f"/api/uploads/proxy/uploads/{storage_key}",
             headers={"Content-Type": content_type},
         )
 

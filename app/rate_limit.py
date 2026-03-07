@@ -51,7 +51,7 @@ class InMemoryRateLimiter:
 
         with self._lock:
             timestamps = self._requests[bucket_key]
-            while timestamps and timestamps[0] <= window_start:
+            while timestamps and timestamps[0] < window_start:
                 timestamps.popleft()
 
             if len(timestamps) >= rule.max_requests:

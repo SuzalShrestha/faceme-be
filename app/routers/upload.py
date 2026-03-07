@@ -115,7 +115,12 @@ def _ensure_upload_belongs_to_user(kind: str, storage_key: str, user: User) -> N
         raise HTTPException(403, "Upload key does not belong to this user")
 
 
-async def _store_uploaded_file(kind: str, storage_key: str, request: Request, user: User):
+async def _store_uploaded_file(
+    kind: str,
+    storage_key: str,
+    request: Request,
+    user: User,
+) -> dict[str, bool]:
     _ensure_upload_belongs_to_user(kind, storage_key, user)
     data = await request.body()
     if len(data) > MAX_FILE_SIZE:
