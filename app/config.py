@@ -58,8 +58,23 @@ WORKER_POLL_INTERVAL_SECONDS = float(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "
 QUEUE_VISIBILITY_TIMEOUT = int(os.getenv("QUEUE_VISIBILITY_TIMEOUT", "300"))
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 
 INSIGHTFACE_MODEL_NAME = os.getenv("INSIGHTFACE_MODEL_NAME", "buffalo_l")
 INSIGHTFACE_DET_WIDTH = int(os.getenv("INSIGHTFACE_DET_WIDTH", "640"))
 INSIGHTFACE_DET_HEIGHT = int(os.getenv("INSIGHTFACE_DET_HEIGHT", "640"))
 INSIGHTFACE_MODEL_ROOT = os.getenv("INSIGHTFACE_MODEL_ROOT", "")
+
+PHOTO_ENCRYPTION_KEY = os.getenv("PHOTO_ENCRYPTION_KEY", SECRET_KEY)
+
+RATE_LIMIT_ENABLED = os.getenv("RATE_LIMIT_ENABLED", "true").lower() == "true"
+RATE_LIMIT_REQUESTS_PER_MINUTE = int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "100"))
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_EXEMPT_PATHS = [
+    path.strip()
+    for path in os.getenv(
+        "RATE_LIMIT_EXEMPT_PATHS",
+        "/api/health/live,/api/health/ready",
+    ).split(",")
+    if path.strip()
+]

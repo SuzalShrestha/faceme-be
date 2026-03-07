@@ -18,6 +18,9 @@ os.environ["QUEUE_PROVIDER"] = "database"
 os.environ["LOCAL_STORAGE_ROOT"] = str(TEST_ROOT / "storage")
 os.environ["SESSION_COOKIE_SECURE"] = "false"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
+os.environ["GOOGLE_CLIENT_ID"] = "test-client"
+os.environ["RATE_LIMIT_REQUESTS_PER_MINUTE"] = "100"
+os.environ["RATE_LIMIT_WINDOW_SECONDS"] = "60"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -25,6 +28,7 @@ from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Cluster, Face, Image  # noqa: E402
 from app.services.pipeline import run_pipeline_job  # noqa: E402
+from app.security import decrypt_bytes  # noqa: E402
 from app.services.storage import get_storage_service  # noqa: E402
 
 
@@ -98,6 +102,9 @@ class ProductionApiTest(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         shutil.rmtree(TEST_ROOT / "storage", ignore_errors=True)
         get_storage_service().readiness_check()
+        limiter = getattr(app.state, "rate_limiter", None)
+        if limiter:
+            limiter.reset()
         self.client = TestClient(app)
 
     def register_user(self) -> None:
@@ -119,6 +126,87 @@ class ProductionApiTest(unittest.TestCase):
 
         me_after_logout = self.client.get("/api/auth/me")
         self.assertEqual(me_after_logout.status_code, 401)
+
+    def test_oauth_login_sets_session(self) -> None:
+        with patch("app.routers.auth.verify_google_id_token") as verify_token:
+            verify_token.return_value = {"email": "oauth@example.com", "name": "OAuth User"}
+            response = self.client.post(
+                "/api/auth/oauth",
+                json={"provider": "google", "id_token": "fake-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["email"], "oauth@example.com")
+
+        me = self.client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json()["email"], "oauth@example.com")
+
+    def test_rate_limiting_blocks_excess_requests(self) -> None:
+        limiter = getattr(app.state, "rate_limiter", None)
+        self.assertIsNotNone(limiter)
+        limiter.reset()
+        limiter.max_requests = 3
+        limiter.window_seconds = 60
+        limiter.exempt_paths = set()
+
+        for _ in range(3):
+            ok = self.client.get("/api/health/live")
+            self.assertEqual(ok.status_code, 200)
+
+        blocked = self.client.get("/api/health/live")
+        self.assertEqual(blocked.status_code, 429)
+
+    def test_uploads_are_encrypted_at_rest(self) -> None:
+        self.register_user()
+
+        initiate = self.client.post(
+            "/api/uploads/initiate",
+            json={
+                "files": [
+                    {
+                        "name": "secret.jpg",
+                        "size": 12,
+                        "content_type": "image/jpeg",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(initiate.status_code, 200)
+        target = initiate.json()["files"][0]
+
+        content = b"secret-photo"
+        upload = self.client.put(
+            target["upload_url"],
+            content=content,
+            headers={"Content-Type": "image/jpeg"},
+        )
+        self.assertEqual(upload.status_code, 200)
+
+        complete = self.client.post(
+            "/api/uploads/complete",
+            json={
+                "files": [
+                    {
+                        "storage_key": target["storage_key"],
+                        "original_name": target["original_name"],
+                        "content_type": target["content_type"],
+                        "size_bytes": target["size_bytes"],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(complete.status_code, 200)
+
+        storage = get_storage_service()
+        self.assertTrue(storage.object_exists("uploads", target["storage_key"]))
+        raw_bytes = storage.download_bytes("uploads", target["storage_key"], decrypt=False)
+        self.assertNotEqual(raw_bytes, content)
+        self.assertEqual(decrypt_bytes(raw_bytes), content)
+
+        asset = self.client.get(f"/api/assets/uploads/{target['storage_key']}")
+        self.assertEqual(asset.status_code, 200)
+        self.assertEqual(asset.content, content)
 
     def test_upload_pipeline_and_asset_flow(self) -> None:
         self.register_user()

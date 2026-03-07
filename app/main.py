@@ -1,8 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import CORS_ORIGINS
+from app.config import (
+    CORS_ORIGINS,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_EXEMPT_PATHS,
+    RATE_LIMIT_REQUESTS_PER_MINUTE,
+    RATE_LIMIT_WINDOW_SECONDS,
+)
 from app.database import check_database
+from app.middleware.rate_limit import RateLimiterMiddleware
 from app.routers import auth, faces, jobs, upload
 from app.routers.assets import router as assets_router
 from app.services.queue import get_queue_service
@@ -17,6 +24,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if RATE_LIMIT_ENABLED:
+    app.add_middleware(
+        RateLimiterMiddleware,
+        max_requests=RATE_LIMIT_REQUESTS_PER_MINUTE,
+        window_seconds=RATE_LIMIT_WINDOW_SECONDS,
+        exempt_paths=RATE_LIMIT_EXEMPT_PATHS,
+    )
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
