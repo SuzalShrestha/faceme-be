@@ -17,9 +17,12 @@ def _build_cipher() -> AESGCM:
     return AESGCM(key)
 
 
+_CIPHER = _build_cipher()
+
+
 def encrypt_photo_bytes(data: bytes) -> bytes:
     nonce = os.urandom(_NONCE_SIZE)
-    encrypted = _build_cipher().encrypt(nonce, data, _AAD)
+    encrypted = _CIPHER.encrypt(nonce, data, _AAD)
     return _PHOTO_MAGIC + nonce + encrypted
 
 
@@ -30,4 +33,4 @@ def decrypt_photo_bytes(data: bytes) -> bytes:
     ciphertext = data[len(_PHOTO_MAGIC) + _NONCE_SIZE:]
     if len(nonce) != _NONCE_SIZE or not ciphertext:
         raise ValueError("Encrypted photo payload is invalid")
-    return _build_cipher().decrypt(nonce, ciphertext, _AAD)
+    return _CIPHER.decrypt(nonce, ciphertext, _AAD)

@@ -17,6 +17,8 @@ from app.config import (
     SESSION_COOKIE_NAME,
 )
 
+_RETRY_AFTER_CEILING_OFFSET = 0.999
+
 
 @dataclass(frozen=True)
 class RateLimitRule:
@@ -53,7 +55,10 @@ class InMemoryRateLimiter:
                 timestamps.popleft()
 
             if len(timestamps) >= rule.max_requests:
-                retry_after = max(1, int(timestamps[0] + rule.window_seconds - now + 0.999))
+                retry_after = max(
+                    1,
+                    int(timestamps[0] + rule.window_seconds - now + _RETRY_AFTER_CEILING_OFFSET),
+                )
                 return rule, retry_after
 
             timestamps.append(now)
@@ -71,6 +76,11 @@ class InMemoryRateLimiter:
         forwarded_for = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
         if forwarded_for:
             return f"ip:{forwarded_for}"
+
+        user_agent = request.headers.get("user-agent", "").strip()
+        host = request.headers.get("host", "").strip()
+        if user_agent or host:
+            return f"client:{user_agent}|{host}"
 
         client_host = request.client.host if request.client else "unknown"
         return f"ip:{client_host}"

@@ -119,8 +119,8 @@ def verify_google_oauth_token(raw_token: str) -> GoogleOAuthProfile:
     if not subject:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token")
 
-    name = (payload.get("name") or email.split("@", 1)[0]).strip()
-    return {"email": email, "name": name or email, "subject": subject}
+    name = (payload.get("name") or email.split("@", 1)[0]).strip() or email
+    return {"email": email, "name": name, "subject": subject}
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:

@@ -115,7 +115,7 @@ def _ensure_upload_belongs_to_user(kind: str, storage_key: str, user: User) -> N
         raise HTTPException(403, "Upload key does not belong to this user")
 
 
-async def _store_uploaded_asset(kind: str, storage_key: str, request: Request, user: User):
+async def _store_uploaded_file(kind: str, storage_key: str, request: Request, user: User):
     _ensure_upload_belongs_to_user(kind, storage_key, user)
     data = await request.body()
     if len(data) > MAX_FILE_SIZE:
@@ -167,7 +167,7 @@ async def upload_local_asset(
     storage = get_storage_service()
     if not isinstance(storage, LocalStorageService):
         raise HTTPException(404, "Local upload endpoint is unavailable")
-    return await _store_uploaded_asset(kind, storage_key, request, user)
+    return await _store_uploaded_file(kind, storage_key, request, user)
 
 
 @router.put("/uploads/proxy/{kind}/{storage_key:path}")
@@ -177,7 +177,7 @@ async def upload_proxy_asset(
     request: Request,
     user: User = Depends(get_current_user),
 ):
-    return await _store_uploaded_asset(kind, storage_key, request, user)
+    return await _store_uploaded_file(kind, storage_key, request, user)
 
 
 @router.post("/uploads/complete", response_model=UploadResponse)
