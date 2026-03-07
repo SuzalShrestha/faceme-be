@@ -20,6 +20,7 @@ from app.config import (
     SIGNED_URL_TTL_SECONDS,
     STORAGE_PROVIDER,
 )
+from app.services.encryption import decrypt_photo_bytes, encrypt_photo_bytes
 
 StorageKind = Literal["uploads", "faces"]
 
@@ -112,10 +113,10 @@ class LocalStorageService(StorageService):
         self._ensure_dirs()
         path = self._path_for(kind, storage_key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+        path.write_bytes(encrypt_photo_bytes(data))
 
     def download_bytes(self, kind: StorageKind, storage_key: str) -> bytes:
-        return self._path_for(kind, storage_key).read_bytes()
+        return decrypt_photo_bytes(self._path_for(kind, storage_key).read_bytes())
 
     def delete_bytes(self, kind: StorageKind, storage_key: str) -> None:
         path = self._path_for(kind, storage_key)
@@ -207,28 +208,23 @@ class AzureBlobStorageService(StorageService):
             original_name=original_name,
             content_type=content_type,
         )
-        blob_client = self._blob_client("uploads", storage_key)
-        sas = self._generate_sas("uploads", storage_key, write=True)
         return UploadInstruction(
             storage_key=storage_key,
-            upload_url=f"{blob_client.url}?{sas}",
-            headers={
-                "x-ms-blob-type": "BlockBlob",
-                "Content-Type": content_type,
-            },
+            upload_url=f"/api/uploads/proxy/uploads/{storage_key}",
+            headers={"Content-Type": content_type},
         )
 
     def upload_bytes(self, kind: StorageKind, storage_key: str, data: bytes, content_type: str) -> None:
         from azure.storage.blob import ContentSettings
 
         self._blob_client(kind, storage_key).upload_blob(
-            data,
+            encrypt_photo_bytes(data),
             overwrite=True,
             content_settings=ContentSettings(content_type=content_type),
         )
 
     def download_bytes(self, kind: StorageKind, storage_key: str) -> bytes:
-        return self._blob_client(kind, storage_key).download_blob().readall()
+        return decrypt_photo_bytes(self._blob_client(kind, storage_key).download_blob().readall())
 
     def delete_bytes(self, kind: StorageKind, storage_key: str) -> None:
         self._blob_client(kind, storage_key).delete_blob(delete_snapshots="include")

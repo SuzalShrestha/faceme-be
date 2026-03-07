@@ -18,6 +18,12 @@ os.environ["QUEUE_PROVIDER"] = "database"
 os.environ["LOCAL_STORAGE_ROOT"] = str(TEST_ROOT / "storage")
 os.environ["SESSION_COOKIE_SECURE"] = "false"
 os.environ["CORS_ORIGINS"] = "http://localhost:3000"
+os.environ["GOOGLE_OAUTH_CLIENT_IDS"] = "test-google-client-id"
+os.environ["RATE_LIMIT_AUTH_MAX_REQUESTS"] = "3"
+os.environ["RATE_LIMIT_AUTH_WINDOW_SECONDS"] = "60"
+os.environ["RATE_LIMIT_WRITE_MAX_REQUESTS"] = "20"
+os.environ["RATE_LIMIT_WRITE_WINDOW_SECONDS"] = "60"
+os.environ["PHOTO_ENCRYPTION_KEY"] = "test-photo-encryption-key"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -25,6 +31,7 @@ from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Cluster, Face, Image  # noqa: E402
 from app.services.pipeline import run_pipeline_job  # noqa: E402
+from app.rate_limit import rate_limiter  # noqa: E402
 from app.services.storage import get_storage_service  # noqa: E402
 
 
@@ -98,6 +105,7 @@ class ProductionApiTest(unittest.TestCase):
         Base.metadata.create_all(bind=engine)
         shutil.rmtree(TEST_ROOT / "storage", ignore_errors=True)
         get_storage_service().readiness_check()
+        rate_limiter.reset()
         self.client = TestClient(app)
 
     def register_user(self) -> None:
@@ -119,6 +127,38 @@ class ProductionApiTest(unittest.TestCase):
 
         me_after_logout = self.client.get("/api/auth/me")
         self.assertEqual(me_after_logout.status_code, 401)
+
+    @patch("app.routers.auth.verify_google_oauth_token")
+    def test_google_oauth_login_creates_user_session(self, mock_verify_google_oauth_token) -> None:
+        mock_verify_google_oauth_token.return_value = {
+            "email": "oauth@example.com",
+            "name": "OAuth User",
+            "subject": "google-subject",
+        }
+
+        response = self.client.post("/api/auth/oauth/google", json={"id_token": "fake-id-token"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["email"], "oauth@example.com")
+
+        me = self.client.get("/api/auth/me")
+        self.assertEqual(me.status_code, 200)
+        self.assertEqual(me.json()["name"], "OAuth User")
+
+    def test_auth_endpoints_are_rate_limited(self) -> None:
+        for attempt in range(3):
+            response = self.client.post(
+                "/api/auth/login",
+                json={"email": "missing@example.com", "password": "password123"},
+            )
+            self.assertEqual(response.status_code, 401, f"unexpected status on attempt {attempt + 1}")
+
+        blocked = self.client.post(
+            "/api/auth/login",
+            json={"email": "missing@example.com", "password": "password123"},
+        )
+        self.assertEqual(blocked.status_code, 429)
+        self.assertEqual(blocked.json()["detail"], "Rate limit exceeded")
+        self.assertEqual(blocked.headers["Retry-After"], "60")
 
     def test_upload_pipeline_and_asset_flow(self) -> None:
         self.register_user()
@@ -167,6 +207,9 @@ class ProductionApiTest(unittest.TestCase):
         asset = self.client.get(image["asset_url"])
         self.assertEqual(asset.status_code, 200)
         self.assertEqual(asset.content, b"fake-image")
+
+        encrypted_file = TEST_ROOT / "storage" / "uploads" / target["storage_key"]
+        self.assertNotEqual(encrypted_file.read_bytes(), b"fake-image")
 
         pipeline = self.client.post("/api/pipeline", json={"image_ids": [image_id]})
         self.assertEqual(pipeline.status_code, 200)

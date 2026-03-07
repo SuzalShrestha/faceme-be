@@ -108,6 +108,24 @@ def _upsert_images(
     return UploadResponse(image_ids=image_ids, count=len(image_ids))
 
 
+def _ensure_upload_belongs_to_user(kind: str, storage_key: str, user: User) -> None:
+    if kind != "uploads":
+        raise HTTPException(404, "Invalid upload target")
+    if f"user-{user.id}/" not in storage_key:
+        raise HTTPException(403, "Upload key does not belong to this user")
+
+
+async def _store_uploaded_asset(kind: str, storage_key: str, request: Request, user: User):
+    _ensure_upload_belongs_to_user(kind, storage_key, user)
+    data = await request.body()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(400, "File too large")
+
+    content_type = request.headers.get("content-type", "application/octet-stream")
+    get_storage_service().upload_bytes(kind, storage_key, data, content_type)
+    return {"ok": True}
+
+
 @router.post("/uploads/initiate", response_model=UploadInitiateResponse)
 def initiate_uploads(
     body: UploadInitiateRequest,
@@ -145,19 +163,21 @@ async def upload_local_asset(
 ):
     if STORAGE_PROVIDER != "local":
         raise HTTPException(404, "Local upload endpoint is disabled")
-    if kind != "uploads":
-        raise HTTPException(404, "Invalid upload target")
-    if f"user-{user.id}/" not in storage_key:
-        raise HTTPException(403, "Upload key does not belong to this user")
 
     storage = get_storage_service()
     if not isinstance(storage, LocalStorageService):
         raise HTTPException(404, "Local upload endpoint is unavailable")
+    return await _store_uploaded_asset(kind, storage_key, request, user)
 
-    data = await request.body()
-    content_type = request.headers.get("content-type", "application/octet-stream")
-    storage.upload_bytes("uploads", storage_key, data, content_type)
-    return {"ok": True}
+
+@router.put("/uploads/proxy/{kind}/{storage_key:path}")
+async def upload_proxy_asset(
+    kind: str,
+    storage_key: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    return await _store_uploaded_asset(kind, storage_key, request, user)
 
 
 @router.post("/uploads/complete", response_model=UploadResponse)

@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import TypedDict
 
 import bcrypt
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.config import (
+    GOOGLE_OAUTH_CLIENT_IDS,
     SESSION_COOKIE_DOMAIN,
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SAMESITE,
@@ -17,6 +19,12 @@ from app.config import (
 )
 from app.database import get_db
 from app.models import SessionToken, User
+
+
+class GoogleOAuthProfile(TypedDict):
+    email: str
+    name: str
+    subject: str
 
 
 def hash_password(password: str) -> str:
@@ -74,6 +82,45 @@ def clear_session_cookie(response: Response) -> None:
         secure=SESSION_COOKIE_SECURE,
         samesite=SESSION_COOKIE_SAMESITE,
     )
+
+
+def verify_google_oauth_token(raw_token: str) -> GoogleOAuthProfile:
+    if not GOOGLE_OAUTH_CLIENT_IDS:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Google OAuth is not configured",
+        )
+
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            raw_token,
+            google_requests.Request(),
+            audience=None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token") from exc
+
+    if payload.get("aud") not in GOOGLE_OAUTH_CLIENT_IDS:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token")
+    if payload.get("iss") not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token")
+
+    email = (payload.get("email") or "").lower().strip()
+    if not email or not payload.get("email_verified"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google account email must be verified",
+        )
+
+    subject = payload.get("sub")
+    if not subject:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google token")
+
+    name = (payload.get("name") or email.split("@", 1)[0]).strip()
+    return {"email": email, "name": name or email, "subject": subject}
 
 
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
