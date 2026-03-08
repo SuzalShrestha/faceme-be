@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import Cluster, Face, Image, User
+from app.services.cluster import ensure_singleton_clusters
 from app.services.storage import get_storage_service
 
 router = APIRouter(tags=["faces"])
@@ -24,6 +25,7 @@ class MergeRequest(BaseModel):
 @router.get("/clusters")
 def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     storage = get_storage_service()
+    ensure_singleton_clusters(db, user_id=user.id)
     clusters = db.query(Cluster).filter(Cluster.user_id == user.id).order_by(Cluster.created_at.desc()).all()
     result = []
     for cluster in clusters:
@@ -100,6 +102,7 @@ def rename_cluster(
 @router.get("/ungrouped")
 def list_ungrouped_faces(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     storage = get_storage_service()
+    ensure_singleton_clusters(db, user_id=user.id)
     user_image_ids = [image.id for image in db.query(Image).filter(Image.user_id == user.id).all()]
     faces = db.query(Face).filter(Face.cluster_id.is_(None), Face.image_id.in_(user_image_ids)).all()
     return [

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.models import Cluster, Face, Image, User  # noqa: E402
-from app.services.cluster import run_clustering  # noqa: E402
+from app.services.cluster import ensure_singleton_clusters, run_clustering  # noqa: E402
 from app.services.storage import get_storage_service  # noqa: E402
 
 
@@ -126,6 +126,17 @@ class ClusterServiceTest(unittest.TestCase):
             if self.db.query(Face).filter(Face.cluster_id == cluster.id).count() == 1
         )
         self.assertEqual(singleton_cluster.representative_face_id, lone_face.id)
+
+    def test_ensure_singleton_clusters_repairs_ungrouped_faces(self) -> None:
+        lone_face = self.add_image_with_face("solo.jpg", [0.0, 1.0], det_score="0.99")
+
+        repaired = ensure_singleton_clusters(self.db, user_id=self.user.id)
+
+        self.assertEqual(repaired, 1)
+        cluster = self.db.query(Cluster).filter(Cluster.user_id == self.user.id).one()
+        self.db.refresh(lone_face)
+        self.assertEqual(lone_face.cluster_id, cluster.id)
+        self.assertEqual(cluster.representative_face_id, lone_face.id)
 
 
 if __name__ == "__main__":

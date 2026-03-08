@@ -23,6 +23,34 @@ def _create_singleton_cluster(
     return cluster
 
 
+def ensure_singleton_clusters(db: Session, *, user_id: int) -> int:
+    user_image_ids = [img.id for img in db.query(Image).filter(Image.user_id == user_id).all()]
+    if not user_image_ids:
+        return 0
+
+    ungrouped_faces = (
+        db.query(Face)
+        .filter(Face.cluster_id.is_(None), Face.image_id.in_(user_image_ids))
+        .order_by(Face.id.asc())
+        .all()
+    )
+    if not ungrouped_faces:
+        return 0
+
+    next_label_index = db.query(Cluster).filter(Cluster.user_id == user_id).count() + 1
+    for face in ungrouped_faces:
+        _create_singleton_cluster(
+            db,
+            user_id=user_id,
+            face=face,
+            label_index=next_label_index,
+        )
+        next_label_index += 1
+
+    db.commit()
+    return len(ungrouped_faces)
+
+
 def run_clustering(db: Session, storage: StorageService, *, user_id: int) -> dict:
     """Run DBSCAN clustering on all face embeddings for a specific user.
 

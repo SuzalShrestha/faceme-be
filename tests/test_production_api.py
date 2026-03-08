@@ -83,6 +83,19 @@ def fake_run_clustering(db, storage, *, user_id):
     return {"total_clusters": 1, "clustered_faces": len(faces), "ungrouped_faces": 0}
 
 
+def fake_run_clustering_leaves_ungrouped(db, storage, *, user_id):
+    faces = (
+        db.query(Face)
+        .join(Image, Face.image_id == Image.id)
+        .filter(Image.user_id == user_id)
+        .all()
+    )
+    for face in faces:
+        face.cluster_id = None
+    db.commit()
+    return {"total_clusters": 0, "clustered_faces": 0, "ungrouped_faces": len(faces)}
+
+
 class ProductionApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -194,6 +207,123 @@ class ProductionApiTest(unittest.TestCase):
         )
         self.assertEqual(rename.status_code, 200)
         self.assertEqual(rename.json()["label"], "Renamed Person")
+
+    def test_single_face_pipeline_appears_in_clusters_with_real_clustering(self) -> None:
+        self.register_user()
+
+        initiate = self.client.post(
+            "/api/uploads/initiate",
+            json={
+                "files": [
+                    {
+                        "name": "solo.jpg",
+                        "size": 12,
+                        "content_type": "image/jpeg",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(initiate.status_code, 200)
+        target = initiate.json()["files"][0]
+
+        upload = self.client.put(
+            target["upload_url"],
+            content=b"fake-image",
+            headers={"Content-Type": "image/jpeg"},
+        )
+        self.assertEqual(upload.status_code, 200)
+
+        complete = self.client.post(
+            "/api/uploads/complete",
+            json={
+                "files": [
+                    {
+                        "storage_key": target["storage_key"],
+                        "original_name": target["original_name"],
+                        "content_type": target["content_type"],
+                        "size_bytes": target["size_bytes"],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(complete.status_code, 200)
+        image_id = complete.json()["image_ids"][0]
+
+        pipeline = self.client.post("/api/pipeline", json={"image_ids": [image_id]})
+        self.assertEqual(pipeline.status_code, 200)
+        job_id = pipeline.json()["job_id"]
+
+        with patch("app.services.pipeline.process_images", side_effect=fake_process_images):
+            self.assertTrue(run_pipeline_job(job_id))
+
+        clusters = self.client.get("/api/clusters")
+        self.assertEqual(clusters.status_code, 200)
+        payload = clusters.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["face_count"], 1)
+        self.assertTrue(payload[0]["representative_url"])
+
+    def test_clusters_endpoint_repairs_single_ungrouped_face(self) -> None:
+        self.register_user()
+
+        initiate = self.client.post(
+            "/api/uploads/initiate",
+            json={
+                "files": [
+                    {
+                        "name": "repair-me.jpg",
+                        "size": 12,
+                        "content_type": "image/jpeg",
+                    }
+                ]
+            },
+        )
+        self.assertEqual(initiate.status_code, 200)
+        target = initiate.json()["files"][0]
+
+        upload = self.client.put(
+            target["upload_url"],
+            content=b"fake-image",
+            headers={"Content-Type": "image/jpeg"},
+        )
+        self.assertEqual(upload.status_code, 200)
+
+        complete = self.client.post(
+            "/api/uploads/complete",
+            json={
+                "files": [
+                    {
+                        "storage_key": target["storage_key"],
+                        "original_name": target["original_name"],
+                        "content_type": target["content_type"],
+                        "size_bytes": target["size_bytes"],
+                    }
+                ]
+            },
+        )
+        self.assertEqual(complete.status_code, 200)
+        image_id = complete.json()["image_ids"][0]
+
+        pipeline = self.client.post("/api/pipeline", json={"image_ids": [image_id]})
+        self.assertEqual(pipeline.status_code, 200)
+        job_id = pipeline.json()["job_id"]
+
+        with patch("app.services.pipeline.process_images", side_effect=fake_process_images), patch(
+            "app.services.pipeline.run_clustering",
+            side_effect=fake_run_clustering_leaves_ungrouped,
+        ):
+            self.assertTrue(run_pipeline_job(job_id))
+
+        ungrouped_before = self.client.get("/api/ungrouped")
+        self.assertEqual(ungrouped_before.status_code, 200)
+        self.assertEqual(ungrouped_before.json(), [])
+
+        clusters = self.client.get("/api/clusters")
+        self.assertEqual(clusters.status_code, 200)
+        payload = clusters.json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["face_count"], 1)
+        self.assertTrue(payload[0]["representative_url"])
 
 
 if __name__ == "__main__":
