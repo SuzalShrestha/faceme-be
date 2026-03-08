@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -22,9 +24,28 @@ class MergeRequest(BaseModel):
 
 
 @router.get("/clusters")
-def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_clusters(
+    search: Optional[str] = Query(None, description="Search clusters by label"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results to return"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     storage = get_storage_service()
-    clusters = db.query(Cluster).filter(Cluster.user_id == user.id).order_by(Cluster.created_at.desc()).all()
+
+    # Build query with filters
+    query = db.query(Cluster).filter(Cluster.user_id == user.id)
+
+    # Apply search filter if provided
+    if search:
+        query = query.filter(Cluster.label.ilike(f"%{search}%"))
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply ordering and pagination
+    clusters = query.order_by(Cluster.created_at.desc()).limit(limit).offset(offset).all()
+
     result = []
     for cluster in clusters:
         face_count = db.query(Face).filter(Face.cluster_id == cluster.id).count()
@@ -45,7 +66,13 @@ def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_curren
                 ),
             }
         )
-    return result
+
+    return {
+        "items": result,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/clusters/{cluster_id}")
@@ -98,20 +125,39 @@ def rename_cluster(
 
 
 @router.get("/ungrouped")
-def list_ungrouped_faces(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_ungrouped_faces(
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results to return"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     storage = get_storage_service()
     user_image_ids = [image.id for image in db.query(Image).filter(Image.user_id == user.id).all()]
-    faces = db.query(Face).filter(Face.cluster_id.is_(None), Face.image_id.in_(user_image_ids)).all()
-    return [
-        {
-            "id": face.id,
-            "asset_url": storage.build_asset_url("faces", face.crop_key),
-            "bbox": face.get_bbox(),
-            "image_id": face.image_id,
-            "image_name": face.image.original_name,
-        }
-        for face in faces
-    ]
+
+    # Build query for ungrouped faces
+    query = db.query(Face).filter(Face.cluster_id.is_(None), Face.image_id.in_(user_image_ids))
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply pagination
+    faces = query.limit(limit).offset(offset).all()
+
+    return {
+        "items": [
+            {
+                "id": face.id,
+                "asset_url": storage.build_asset_url("faces", face.crop_key),
+                "bbox": face.get_bbox(),
+                "image_id": face.image_id,
+                "image_name": face.image.original_name,
+            }
+            for face in faces
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/clusters/merge")

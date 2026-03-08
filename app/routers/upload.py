@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -189,20 +191,54 @@ def import_from_drive(
 
 
 @router.get("/images")
-def list_images(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_images(
+    search: Optional[str] = Query(None, description="Search images by original filename"),
+    status: Optional[str] = Query(None, description="Filter by status (uploaded, processed, failed)"),
+    source: Optional[str] = Query(None, description="Filter by source (upload, drive)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of results to return"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     storage = get_storage_service()
-    images = db.query(Image).filter(Image.user_id == user.id).order_by(Image.uploaded_at.desc()).all()
-    return [
-        {
-            "id": image.id,
-            "storage_key": image.storage_key,
-            "original_name": image.original_name,
-            "content_type": image.content_type,
-            "size_bytes": image.size_bytes,
-            "source": image.source,
-            "status": image.status,
-            "uploaded_at": image.uploaded_at.isoformat() if image.uploaded_at else None,
-            "asset_url": storage.build_asset_url("uploads", image.storage_key),
-        }
-        for image in images
-    ]
+
+    # Build query with filters
+    query = db.query(Image).filter(Image.user_id == user.id)
+
+    # Apply search filter if provided
+    if search:
+        query = query.filter(Image.original_name.ilike(f"%{search}%"))
+
+    # Apply status filter if provided
+    if status:
+        query = query.filter(Image.status == status)
+
+    # Apply source filter if provided
+    if source:
+        query = query.filter(Image.source == source)
+
+    # Get total count before pagination
+    total = query.count()
+
+    # Apply ordering and pagination
+    images = query.order_by(Image.uploaded_at.desc()).limit(limit).offset(offset).all()
+
+    return {
+        "items": [
+            {
+                "id": image.id,
+                "storage_key": image.storage_key,
+                "original_name": image.original_name,
+                "content_type": image.content_type,
+                "size_bytes": image.size_bytes,
+                "source": image.source,
+                "status": image.status,
+                "uploaded_at": image.uploaded_at.isoformat() if image.uploaded_at else None,
+                "asset_url": storage.build_asset_url("uploads", image.storage_key),
+            }
+            for image in images
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
