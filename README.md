@@ -183,6 +183,12 @@ It does not perform face processing itself. All heavy work happens in the backen
 - dashboard shell in `frontend/src/components/layout/dashboard-layout.tsx`
 - drag-and-drop upload input in `frontend/src/components/dropzone.tsx`
 
+### Cluster search
+
+- `GET /api/clusters` accepts an optional `search` query string to filter by label.
+- `frontend/src/hooks/useClusterSearch.ts` provides a TanStack Query hook with cached results and debounced input handling.
+- `frontend/src/components/cluster-search.tsx` shows a ready-to-drop UI using the hook.
+
 ### Frontend notes and caveats
 
 - Google Drive import is implemented in the API client, but the current upload page ships with `GOOGLE_DRIVE_ENABLED = false`, so the Drive UI is intentionally disabled.

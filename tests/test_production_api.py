@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Cluster, Face, Image  # noqa: E402
+from app.models import Cluster, Face, Image, User  # noqa: E402
 from app.services.pipeline import run_pipeline_job  # noqa: E402
 from app.services.storage import get_storage_service  # noqa: E402
 
@@ -194,6 +194,25 @@ class ProductionApiTest(unittest.TestCase):
         )
         self.assertEqual(rename.status_code, 200)
         self.assertEqual(rename.json()["label"], "Renamed Person")
+
+    def test_cluster_search_filtering(self) -> None:
+        self.register_user()
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.email == "test@example.com").first()
+            self.assertIsNotNone(user)
+            db.add_all(
+                [
+                    Cluster(user_id=user.id, label="Alice Johnson"),
+                    Cluster(user_id=user.id, label="Bob Smith"),
+                    Cluster(user_id=user.id, label="Alicia Keys"),
+                ]
+            )
+            db.commit()
+
+        search = self.client.get("/api/clusters", params={"search": "ali"})
+        self.assertEqual(search.status_code, 200)
+        labels = {cluster["label"] for cluster in search.json()}
+        self.assertEqual(labels, {"Alice Johnson", "Alicia Keys"})
 
 
 if __name__ == "__main__":
