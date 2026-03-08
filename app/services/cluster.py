@@ -41,26 +41,43 @@ def run_clustering(db: Session, storage: StorageService, *, user_id: int) -> dic
         db.flush()
         cluster_map[label_val] = cluster
 
+    # Create individual clusters for single faces (noise points)
+    noise_cluster_counter = len(unique_labels) + 1
     for face, label_val in zip(faces, labels):
         if label_val == -1:
-            continue
-        face.cluster_id = cluster_map[label_val].id
+            # Create a new cluster for each single face
+            cluster = Cluster(user_id=user_id, label=f"Person {noise_cluster_counter}")
+            db.add(cluster)
+            db.flush()
+            cluster_map[face.id] = cluster  # Use face.id as key for noise clusters
+            face.cluster_id = cluster.id
+            noise_cluster_counter += 1
+        else:
+            face.cluster_id = cluster_map[label_val].id
 
     for label_val, cluster in cluster_map.items():
         cluster_faces = [
             f for f, l in zip(faces, labels) if l == label_val
         ]
-        best = max(
-            cluster_faces,
-            key=lambda f: float(f.det_score or 0),
-        )
-        cluster.representative_face_id = best.id
+        if cluster_faces:  # Only process if there are faces (for DBSCAN clusters)
+            best = max(
+                cluster_faces,
+                key=lambda f: float(f.det_score or 0),
+            )
+            cluster.representative_face_id = best.id
+        else:  # For single-face clusters (noise points)
+            # The cluster was created for a specific face, find it by cluster_id
+            for face in faces:
+                if face.cluster_id == cluster.id:
+                    cluster.representative_face_id = face.id
+                    break
 
     db.commit()
 
     n_noise = int(np.sum(labels == -1))
+    # All faces are now clustered (including single faces)
     return {
         "total_clusters": len(cluster_map),
-        "clustered_faces": len(faces) - n_noise,
-        "ungrouped_faces": n_noise,
+        "clustered_faces": len(faces),
+        "ungrouped_faces": 0,
     }
