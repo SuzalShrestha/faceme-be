@@ -163,7 +163,8 @@ class ProductionApiTest(unittest.TestCase):
 
         images = self.client.get("/api/images")
         self.assertEqual(images.status_code, 200)
-        image = images.json()[0]
+        self.assertEqual(len(images.json()["items"]), 1)
+        image = images.json()["items"][0]
         asset = self.client.get(image["asset_url"])
         self.assertEqual(asset.status_code, 200)
         self.assertEqual(asset.content, b"fake-image")
@@ -184,7 +185,8 @@ class ProductionApiTest(unittest.TestCase):
 
         clusters = self.client.get("/api/clusters")
         self.assertEqual(clusters.status_code, 200)
-        cluster = clusters.json()[0]
+        self.assertEqual(len(clusters.json()["items"]), 1)
+        cluster = clusters.json()["items"][0]
         self.assertEqual(cluster["face_count"], 1)
         self.assertTrue(cluster["representative_url"])
 
@@ -194,6 +196,180 @@ class ProductionApiTest(unittest.TestCase):
         )
         self.assertEqual(rename.status_code, 200)
         self.assertEqual(rename.json()["label"], "Renamed Person")
+
+    def test_clusters_search_and_pagination(self) -> None:
+        """Test that clusters endpoint supports search and pagination parameters"""
+        self.register_user()
+
+        # Create test data by inserting clusters
+        db = SessionLocal()
+        try:
+            from app.models import User
+            user = db.query(User).filter(User.email == "test@example.com").first()
+
+            # Create multiple clusters with different labels
+            clusters = [
+                Cluster(user_id=user.id, label="Alice"),
+                Cluster(user_id=user.id, label="Bob"),
+                Cluster(user_id=user.id, label="Charlie"),
+                Cluster(user_id=user.id, label="David"),
+            ]
+            for cluster in clusters:
+                db.add(cluster)
+            db.commit()
+        finally:
+            db.close()
+
+        # Test pagination
+        response = self.client.get("/api/clusters?limit=2&offset=0")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 2)
+        self.assertEqual(data["total"], 4)
+        self.assertEqual(data["limit"], 2)
+        self.assertEqual(data["offset"], 0)
+
+        # Test pagination with offset
+        response = self.client.get("/api/clusters?limit=2&offset=2")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 2)
+        self.assertEqual(data["total"], 4)
+
+        # Test search by label
+        response = self.client.get("/api/clusters?search=bob")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["label"], "Bob")
+
+        # Test case-insensitive search
+        response = self.client.get("/api/clusters?search=BOB")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 1)
+
+        # Test partial search
+        response = self.client.get("/api/clusters?search=li")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        # Should match both Alice and Charlie
+        self.assertEqual(len(data["items"]), 2)
+
+    def test_images_search_and_filters(self) -> None:
+        """Test that images endpoint supports search and filter parameters"""
+        self.register_user()
+
+        # Create test data by uploading multiple images
+        storage = get_storage_service()
+        db = SessionLocal()
+        try:
+            from app.models import User
+            user = db.query(User).filter(User.email == "test@example.com").first()
+
+            # Create multiple images with different names and statuses
+            images = [
+                Image(
+                    user_id=user.id,
+                    storage_key=storage.new_upload_key(
+                        user_id=user.id, original_name="vacation.jpg", content_type="image/jpeg"
+                    ),
+                    original_name="vacation.jpg",
+                    content_type="image/jpeg",
+                    size_bytes=1000,
+                    source="upload",
+                    status="uploaded",
+                ),
+                Image(
+                    user_id=user.id,
+                    storage_key=storage.new_upload_key(
+                        user_id=user.id, original_name="family.jpg", content_type="image/jpeg"
+                    ),
+                    original_name="family.jpg",
+                    content_type="image/jpeg",
+                    size_bytes=2000,
+                    source="upload",
+                    status="processed",
+                ),
+                Image(
+                    user_id=user.id,
+                    storage_key=storage.new_upload_key(
+                        user_id=user.id, original_name="wedding.jpg", content_type="image/jpeg"
+                    ),
+                    original_name="wedding.jpg",
+                    content_type="image/jpeg",
+                    size_bytes=1500,
+                    source="drive",
+                    status="processed",
+                ),
+            ]
+            for image in images:
+                # Create empty files in storage
+                storage.upload_bytes("uploads", image.storage_key, b"fake", "image/jpeg")
+                db.add(image)
+            db.commit()
+        finally:
+            db.close()
+
+        # Test search by filename
+        response = self.client.get("/api/images?search=family")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["original_name"], "family.jpg")
+
+        # Test filter by status
+        response = self.client.get("/api/images?status=processed")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 2)
+        for item in data["items"]:
+            self.assertEqual(item["status"], "processed")
+
+        # Test filter by source
+        response = self.client.get("/api/images?source=drive")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["source"], "drive")
+
+        # Test pagination
+        response = self.client.get("/api/images?limit=2&offset=0")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 2)
+        self.assertEqual(data["total"], 3)
+
+        # Test combined filters
+        response = self.client.get("/api/images?status=processed&source=upload")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["original_name"], "family.jpg")
+
+    def test_caching_headers(self) -> None:
+        """Test that caching headers are properly set on GET requests"""
+        self.register_user()
+
+        # Test that clusters endpoint returns caching headers
+        response = self.client.get("/api/clusters")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Cache-Control", response.headers)
+        self.assertIn("ETag", response.headers)
+
+        # Test that images endpoint returns caching headers
+        response = self.client.get("/api/images")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Cache-Control", response.headers)
+        self.assertIn("ETag", response.headers)
+
+        # Test conditional request with If-None-Match
+        etag = response.headers["ETag"]
+        response_conditional = self.client.get(
+            "/api/images",
+            headers={"If-None-Match": etag}
+        )
+        self.assertEqual(response_conditional.status_code, 304)
 
 
 if __name__ == "__main__":
