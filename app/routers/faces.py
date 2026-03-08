@@ -22,9 +22,16 @@ class MergeRequest(BaseModel):
 
 
 @router.get("/clusters")
-def list_clusters(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_clusters(
+    search: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     storage = get_storage_service()
-    clusters = db.query(Cluster).filter(Cluster.user_id == user.id).order_by(Cluster.created_at.desc()).all()
+    query = db.query(Cluster).filter(Cluster.user_id == user.id)
+    if search:
+        query = query.filter(Cluster.label.ilike(f"%{search.strip()}%"))
+    clusters = query.order_by(Cluster.created_at.desc()).all()
     result = []
     for cluster in clusters:
         face_count = db.query(Face).filter(Face.cluster_id == cluster.id).count()
